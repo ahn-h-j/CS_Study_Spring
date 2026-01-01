@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat:*)",
+      "Bash(./gradlew test:*)",
+      "Bash(findstr:*)",
+      "Bash(./gradlew compileTestJava:*)"
+    ]
+  }
+}
