@@ -4,7 +4,9 @@
       "Bash(cat:*)",
       "Bash(./gradlew test:*)",
       "Bash(findstr:*)",
-      "Bash(./gradlew compileTestJava:*)"
+      "Bash(./gradlew compileTestJava:*)",
+      "Bash(./gradlew --stop)",
+      "Bash(./gradlew clean:*)"
     ]
   }
 }

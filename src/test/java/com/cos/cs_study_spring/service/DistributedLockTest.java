@@ -57,6 +57,17 @@ class DistributedLockTest {
 
     private Long stockId;
 
+    // 각 테스트 결과 저장
+    private static long noLockDuration;
+    private static long spinLockDuration;
+    private static long fullJitterDuration;
+    private static long pubSubDuration;
+
+    private static Long noLockFinalStock;
+    private static Long spinLockFinalStock;
+    private static Long fullJitterFinalStock;
+    private static Long pubSubFinalStock;
+
     @BeforeEach
     void setUp() {
         Stock stock = new Stock(INITIAL_STOCK);
@@ -98,24 +109,24 @@ class DistributedLockTest {
         latch.await();
 
         long endTime = System.currentTimeMillis();
-        long duration = endTime - startTime;
+        noLockDuration = endTime - startTime;
 
         // Then
         Stock stock = stockRepository.findById(stockId).orElseThrow();
-        Long finalQuantity = stock.getQuantity();
+        noLockFinalStock = stock.getQuantity();
 
         log.info("============================================================");
         log.info("Case 1: No Lock 결과");
         log.info("============================================================");
         log.info("초기 재고: {}", INITIAL_STOCK);
         log.info("동시 요청 수: {}", THREAD_COUNT);
-        log.info("최종 재고: {} (기대값: 0)", finalQuantity);
-        log.info("정합성: {}", finalQuantity == 0 ? "✅ 보장" : "❌ 실패");
-        log.info("소요 시간: {}ms", duration);
+        log.info("최종 재고: {} (기대값: 0)", noLockFinalStock);
+        log.info("정합성: {}", noLockFinalStock == 0 ? "✅ 보장" : "❌ 실패");
+        log.info("소요 시간: {}ms", noLockDuration);
         log.info("============================================================");
 
         // Race Condition으로 인해 0보다 클 가능성이 높음
-        // assertThat(finalQuantity).isNotEqualTo(0);
+        // assertThat(noLockFinalStock).isNotEqualTo(0);
 
         executorService.shutdown();
     }
@@ -150,38 +161,39 @@ class DistributedLockTest {
         latch.await();
 
         long endTime = System.currentTimeMillis();
-        long duration = endTime - startTime;
+        spinLockDuration = endTime - startTime;
 
         // Then
         Stock stock = stockRepository.findById(stockId).orElseThrow();
-        Long finalQuantity = stock.getQuantity();
+        spinLockFinalStock = stock.getQuantity();
 
         log.info("============================================================");
         log.info("Case 2: Pure Spin Lock 결과");
         log.info("============================================================");
         log.info("초기 재고: {}", INITIAL_STOCK);
         log.info("동시 요청 수: {}", THREAD_COUNT);
-        log.info("최종 재고: {} (기대값: 0)", finalQuantity);
-        log.info("정합성: {}", finalQuantity == 0 ? "✅ 보장" : "❌ 실패");
-        log.info("소요 시간: {}ms", duration);
+        log.info("최종 재고: {} (기대값: 0)", spinLockFinalStock);
+        log.info("정합성: {}", spinLockFinalStock == 0 ? "✅ 보장" : "❌ 실패");
+        log.info("소요 시간: {}ms", spinLockDuration);
         log.info("⚠️ Redis 부하: 매우 높음 (Busy Waiting)");
         log.info("============================================================");
 
-        assertThat(finalQuantity).isEqualTo(0);
+        assertThat(spinLockFinalStock).isEqualTo(0);
 
         executorService.shutdown();
     }
 
     /**
      * ========================================================================
-     * Case 3: Spin Lock with Exponential Backoff
+     * Case 3: Spin Lock with Full Jitter
      * ========================================================================
-     * - 락 획득 실패 시 지수적으로 증가하는 대기 시간
-     * - 정합성 보장, Redis 부하 감소
+     * - 공식: sleep = random(0, base × 2^attempt)
+     * - 대기 시간을 완전히 랜덤화하여 Thundering Herd 분산
+     * - AWS 권장 전략
      */
     @Test
     @Order(3)
-    @DisplayName("Case 3: Spin Lock with Backoff - 정합성 보장, 중간 Redis 부하")
+    @DisplayName("Case 3: Full Jitter - 정합성 보장, 낮은 Redis 부하")
     void spinLockWithBackoff_consistency() throws InterruptedException {
         // Given
         ExecutorService executorService = Executors.newFixedThreadPool(THREAD_COUNT);
@@ -204,24 +216,25 @@ class DistributedLockTest {
         latch.await();
 
         long endTime = System.currentTimeMillis();
-        long duration = endTime - startTime;
+        fullJitterDuration = endTime - startTime;
 
         // Then
         Stock stock = stockRepository.findById(stockId).orElseThrow();
-        Long finalQuantity = stock.getQuantity();
+        fullJitterFinalStock = stock.getQuantity();
 
         log.info("============================================================");
-        log.info("Case 3: Spin Lock with Backoff 결과");
+        log.info("Case 3: Full Jitter 결과");
         log.info("============================================================");
+        log.info("공식: sleep = random(0, base × 2^attempt)");
         log.info("초기 재고: {}", INITIAL_STOCK);
         log.info("동시 요청 수: {}", THREAD_COUNT);
-        log.info("최종 재고: {} (기대값: 0)", finalQuantity);
-        log.info("정합성: {}", finalQuantity == 0 ? "✅ 보장" : "❌ 실패");
-        log.info("소요 시간: {}ms", duration);
-        log.info("📊 Redis 부하: 중간 (Backoff로 재시도 간격 증가)");
+        log.info("최종 재고: {} (기대값: 0)", fullJitterFinalStock);
+        log.info("정합성: {}", fullJitterFinalStock == 0 ? "✅ 보장" : "❌ 실패");
+        log.info("소요 시간: {}ms", fullJitterDuration);
+        log.info("📊 Redis 부하: 낮음~중간 (Full Jitter로 재시도 분산)");
         log.info("============================================================");
 
-        assertThat(finalQuantity).isEqualTo(0);
+        assertThat(fullJitterFinalStock).isEqualTo(0);
 
         executorService.shutdown();
     }
@@ -258,24 +271,24 @@ class DistributedLockTest {
         latch.await();
 
         long endTime = System.currentTimeMillis();
-        long duration = endTime - startTime;
+        pubSubDuration = endTime - startTime;
 
         // Then
         Stock stock = stockRepository.findById(stockId).orElseThrow();
-        Long finalQuantity = stock.getQuantity();
+        pubSubFinalStock = stock.getQuantity();
 
         log.info("============================================================");
         log.info("Case 4: Pub/Sub Lock (Redisson) 결과");
         log.info("============================================================");
         log.info("초기 재고: {}", INITIAL_STOCK);
         log.info("동시 요청 수: {}", THREAD_COUNT);
-        log.info("최종 재고: {} (기대값: 0)", finalQuantity);
-        log.info("정합성: {}", finalQuantity == 0 ? "✅ 보장" : "❌ 실패");
-        log.info("소요 시간: {}ms", duration);
+        log.info("최종 재고: {} (기대값: 0)", pubSubFinalStock);
+        log.info("정합성: {}", pubSubFinalStock == 0 ? "✅ 보장" : "❌ 실패");
+        log.info("소요 시간: {}ms", pubSubDuration);
         log.info("✅ Redis 부하: 최소 (Pub/Sub 방식)");
         log.info("============================================================");
 
-        assertThat(finalQuantity).isEqualTo(0);
+        assertThat(pubSubFinalStock).isEqualTo(0);
 
         executorService.shutdown();
     }
@@ -290,21 +303,41 @@ class DistributedLockTest {
     @DisplayName("전체 분산 락 방식 비교")
     void compareAllMethods() {
         log.info("");
-        log.info("╔══════════════════════════════════════════════════════════════════╗");
-        log.info("║              분산 락 방식별 특성 비교 요약                          ║");
-        log.info("╠══════════════════════════════════════════════════════════════════╣");
-        log.info("║  방식               │ 정합성  │ Redis 부하 │ 반응성 │ 구현 복잡도  ║");
-        log.info("╠══════════════════════════════════════════════════════════════════╣");
-        log.info("║  No Lock            │  ❌     │  없음      │  N/A   │  ★☆☆☆☆    ║");
-        log.info("║  Pure Spin Lock     │  ✅     │  ⚠️⚠️⚠️    │  빠름  │  ★★☆☆☆    ║");
-        log.info("║  Spin + Backoff     │  ✅     │  ⚠️        │  느림  │  ★★★☆☆    ║");
-        log.info("║  Pub/Sub (Redisson) │  ✅     │  ✅        │  빠름  │  ★★☆☆☆    ║");
-        log.info("╚══════════════════════════════════════════════════════════════════╝");
-        log.info("");
-        log.info("📌 권장 사항:");
-        log.info("   - 프로덕션 환경: Pub/Sub (Redisson) 사용 권장");
-        log.info("   - 간단한 테스트: Spin Lock with Backoff 사용 가능");
-        log.info("   - Pure Spin Lock: 절대 프로덕션에서 사용 금지!");
+        log.info("╔════════════════════════════════════════════════════════════════════════════╗");
+        log.info("║                     분산 락 방식별 비교 - 테스트 결과                        ║");
+        log.info("╠════════════════════════════════════════════════════════════════════════════╣");
+        log.info("║                                                                            ║");
+        log.info("║  ┌────────────────────┬────────────┬────────────┬────────────────────┐    ║");
+        log.info("║  │ 방식               │ 소요 시간  │ 최종 재고  │ 정합성             │    ║");
+        log.info("║  ├────────────────────┼────────────┼────────────┼────────────────────┤    ║");
+        log.info("║  │ No Lock            │ {}ms   │ {}     │ {}    │    ║",
+                String.format("%6d", noLockDuration),
+                String.format("%6d", noLockFinalStock),
+                noLockFinalStock == 0 ? "✅ 보장      " : "❌ 실패      ");
+        log.info("║  │ Pure Spin Lock     │ {}ms   │ {}     │ {}    │    ║",
+                String.format("%6d", spinLockDuration),
+                String.format("%6d", spinLockFinalStock),
+                spinLockFinalStock == 0 ? "✅ 보장      " : "❌ 실패      ");
+        log.info("║  │ Full Jitter        │ {}ms   │ {}     │ {}    │    ║",
+                String.format("%6d", fullJitterDuration),
+                String.format("%6d", fullJitterFinalStock),
+                fullJitterFinalStock == 0 ? "✅ 보장      " : "❌ 실패      ");
+        log.info("║  │ Pub/Sub (Redisson) │ {}ms   │ {}     │ {}    │    ║",
+                String.format("%6d", pubSubDuration),
+                String.format("%6d", pubSubFinalStock),
+                pubSubFinalStock == 0 ? "✅ 보장      " : "❌ 실패      ");
+        log.info("║  └────────────────────┴────────────┴────────────┴────────────────────┘    ║");
+        log.info("║                                                                            ║");
+        log.info("╠════════════════════════════════════════════════════════════════════════════╣");
+        log.info("║  방식별 특성                                                                ║");
+        log.info("╠════════════════════════════════════════════════════════════════════════════╣");
+        log.info("║  • No Lock:            락 없음 → Race Condition 발생                       ║");
+        log.info("║  • Pure Spin Lock:     락 획득까지 무한 재시도 → Redis 부하 높음           ║");
+        log.info("║  • Full Jitter:        지수 백오프 + 랜덤 대기 → Redis 부하 중간           ║");
+        log.info("║  • Pub/Sub (Redisson): 락 해제 알림 대기 → Redis 부하 낮음                 ║");
+        log.info("║                                                                            ║");
+        log.info("║  📌 권장: 프로덕션에서는 Pub/Sub (Redisson) 사용                            ║");
+        log.info("╚════════════════════════════════════════════════════════════════════════════╝");
         log.info("");
     }
 }

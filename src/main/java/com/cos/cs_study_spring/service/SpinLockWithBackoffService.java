@@ -9,59 +9,40 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * ============================================================================
- * Case 3: Spin Lock with Exponential Backoff + Jitter
+ * Full Jitter 전략
  * ============================================================================
  *
- * [동작 원리]
- * 1. Redis의 SETNX 명령으로 락 획득 시도
- * 2. 락 획득 실패 시, 일정 시간 대기 후 재시도
- * 3. 재시도할 때마다 대기 시간을 지수적으로 증가 (Exponential Backoff)
- * 4. ⭐ Jitter: 대기 시간에 랜덤 값을 추가하여 동시 재시도 분산
+ * [공식]
+ * sleep = random(0, base × 2^attempt)
  *
- * [Jitter가 필요한 이유 - Thundering Herd 문제]
- * ─────────────────────────────────────────────
- * Jitter 없이 Backoff만 사용하면:
+ * [특징]
+ * - 대기 시간을 완전히 랜덤화
+ * - 0부터 최대값 사이의 어느 값이든 동일한 확률로 선택
+ * - 재시도 시점이 매우 넓은 범위로 분산됨
  *
- *   시간 →
- *   Thread A: [실패]────[20ms 대기]────[재시도]
- *   Thread B: [실패]────[20ms 대기]────[재시도]  ← 동시에 재시도!
- *   Thread C: [실패]────[20ms 대기]────[재시도]  ← 동시에 재시도!
- *                                      ↑
- *                           모든 스레드가 정확히 같은 시간에 재시도
- *                           → Redis에 순간적으로 부하 집중 (Thundering Herd)
- *
- * Jitter를 추가하면:
- *
- *   시간 →
- *   Thread A: [실패]──[18ms]──[재시도]
- *   Thread B: [실패]────[23ms]────[재시도]     ← 분산된 재시도!
- *   Thread C: [실패]──────[25ms]──────[재시도] ← 분산된 재시도!
- *                    └─────────────────────┘
- *                    랜덤 Jitter로 재시도 시점이 분산됨
- *                    → Redis 부하가 시간에 걸쳐 분산
+ * [동작 예시] (base=10ms, cap=100ms)
+ * ───────────────────────────────────────────────────────────
+ * attempt=0: random(0, 10)  → 예: 3ms, 7ms, 2ms
+ * attempt=1: random(0, 20)  → 예: 5ms, 18ms, 1ms
+ * attempt=2: random(0, 40)  → 예: 12ms, 35ms, 8ms
+ * attempt=3: random(0, 80)  → 예: 45ms, 22ms, 70ms
+ * attempt=4: random(0, 100) → cap 적용
+ * ───────────────────────────────────────────────────────────
  *
  * [장점]
- * - Pure Spin Lock 대비 Redis 서버 부하 대폭 감소
- * - Jitter로 Thundering Herd 문제 방지
- * - 구현이 비교적 단순함 (Pub/Sub 대비)
+ * - Thundering Herd 문제 해결에 가장 효과적
+ * - 재시도가 시간 축에서 균등하게 분포
+ * - AWS 권장 전략 (AWS Architecture Blog)
  *
  * [단점]
- * - 락 획득 지연시간(Latency) 증가
- * - 여전히 Polling 방식이므로 네트워크 호출 발생
+ * - 평균 대기 시간이 짧아질 수 있음 (0에 가까운 값도 선택 가능)
+ * - 운이 나쁘면 계속 짧은 대기 시간이 선택될 수 있음
  *
- * [Redis 서버 부하: 중간 ⚠️]
- * ============================================================================
- * | Backoff + Jitter 전략:                                                   |
- * | 실제 대기 시간 = backoff + random(0, backoff/2)                          |
- * |                                                                          |
- * | 예시 (backoff = 20ms, jitter 범위 = 0~10ms):                             |
- * | Thread A: 20 + 3 = 23ms                                                  |
- * | Thread B: 20 + 8 = 28ms                                                  |
- * | Thread C: 20 + 1 = 21ms                                                  |
- * | → 재시도 시점이 21ms ~ 28ms 사이로 분산됨                                 |
+ * [Redis 서버 부하: 낮음~중간]
  * ============================================================================
  */
 @Slf4j
@@ -72,38 +53,48 @@ public class SpinLockWithBackoffService {
     private final LettuceLockRepository lettuceLockRepository;
     private final StockRepository stockRepository;
 
-    private static final String LOCK_KEY = "stock:lock:backoff";
-    private static final long INITIAL_BACKOFF_MS = 10;  // 초기 대기 시간
-    private static final long MAX_BACKOFF_MS = 100;     // 최대 대기 시간
-    private static final double JITTER_FACTOR = 0.5;    // Jitter 비율 (50%)
+    private static final String LOCK_KEY = "stock:lock:full-jitter";
+    private static final long BASE_MS = 10;       // 기본 대기 시간
+    private static final long CAP_MS = 100;       // 최대 대기 시간
+
+    // 재시도 횟수 카운터
+    private final AtomicLong retryCount = new AtomicLong(0);
+
+    public long getRetryCount() {
+        return retryCount.get();
+    }
+
+    public void resetRetryCount() {
+        retryCount.set(0);
+    }
 
     /**
-     * Spin Lock with Exponential Backoff + Jitter로 재고 감소
+     * Full Jitter 전략으로 재고 감소
      *
-     * [Backoff + Jitter 전략]
-     * - 재시도할 때마다 대기 시간을 2배씩 증가 (Exponential Backoff)
-     * - 대기 시간에 랜덤 값을 추가하여 재시도 시점 분산 (Jitter)
-     * - 최대 대기 시간(100ms) 제한으로 과도한 지연 방지
+     * [Full Jitter 공식]
+     * sleep = random(0, base × 2^attempt)
+     *
+     * 대기 시간을 0부터 지수적으로 증가하는 최대값 사이에서 완전 랜덤 선택
      */
     public void decrease(Long id) throws InterruptedException {
-        long backoff = INITIAL_BACKOFF_MS;
+        int attempt = 0;
 
         // ========================================
-        // 1. Spin Lock with Backoff + Jitter
+        // 1. Spin Lock with Full Jitter
         // ========================================
         while (!lettuceLockRepository.tryLock(LOCK_KEY)) {
-            // ────────────────────────────────────────
-            // Jitter 계산: 0 ~ (backoff * 0.5) 사이의 랜덤 값
-            // ────────────────────────────────────────
-            // ThreadLocalRandom: 멀티스레드 환경에서 성능이 좋은 난수 생성기
-            long jitter = ThreadLocalRandom.current().nextLong((long) (backoff * JITTER_FACTOR));
+            retryCount.incrementAndGet();  // 재시도 횟수 증가
 
-            // 실제 대기 시간 = 기본 backoff + 랜덤 jitter
-            long sleepTime = backoff + jitter;
+            // ────────────────────────────────────────
+            // Full Jitter: random(0, base × 2^attempt)
+            // ────────────────────────────────────────
+            // attempt가 너무 크면 오버플로우 방지 (cap에서 이미 제한되므로 최대 시프트 제한)
+            int safeAttempt = Math.min(attempt, 6);  // 2^6 = 64, base(10) * 64 = 640 > cap(100)
+            long maxSleep = Math.min(CAP_MS, BASE_MS * (1L << safeAttempt));  // base × 2^attempt, cap 적용
+            long sleepTime = ThreadLocalRandom.current().nextLong(maxSleep + 1);  // 0 ~ maxSleep
+
             Thread.sleep(sleepTime);
-
-            // Exponential Backoff: 대기 시간 2배 증가
-            backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+            attempt++;
         }
 
         try {
