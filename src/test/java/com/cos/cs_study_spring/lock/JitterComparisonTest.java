@@ -1,6 +1,7 @@
-package com.cos.cs_study_spring.service;
+package com.cos.cs_study_spring.lock;
 
-import com.cos.cs_study_spring.domain.Stock;
+import com.cos.cs_study_spring.jitter.DecorrelatedJitterService;
+import com.cos.cs_study_spring.jitter.EqualJitterService;
 import com.cos.cs_study_spring.repository.StockRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.*;

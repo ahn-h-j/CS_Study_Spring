@@ -1,6 +1,6 @@
-package com.cos.cs_study_spring.service;
+package com.cos.cs_study_spring.jitter;
 
-import com.cos.cs_study_spring.domain.Stock;
+import com.cos.cs_study_spring.lock.Stock;
 import com.cos.cs_study_spring.repository.LettuceLockRepository;
 import com.cos.cs_study_spring.repository.StockRepository;
 import lombok.RequiredArgsConstructor;

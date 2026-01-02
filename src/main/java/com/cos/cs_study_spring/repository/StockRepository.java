@@ -1,6 +1,6 @@
 package com.cos.cs_study_spring.repository;
 
-import com.cos.cs_study_spring.domain.Stock;
+import com.cos.cs_study_spring.lock.Stock;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 /**

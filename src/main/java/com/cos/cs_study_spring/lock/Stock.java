@@ -1,4 +1,4 @@
-package com.cos.cs_study_spring.domain;
+package com.cos.cs_study_spring.lock;
 
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
